@@ -1,0 +1,313 @@
+{
+  "name": "Topic 7 - Self Correcting Auditor - Rate Limit Friendly",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b8b16f35-feab-4659-8597-d863ff72cd3e",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2768,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = [\n {transaction_id:'TXN001',customer_id:'CUST001',amount:1200,currency:'INR',status:'PAID'},\n {transaction_id:'TXN002',customer_id:'CUST002',amount:-350,currency:'INR',status:'PAID'},\n {transaction_id:'TXN003',customer_id:'CUST003',amount:'750',currency:'inr',status:'paid'},\n {transaction_id:'TXN004',customer_id:'',amount:500,currency:'INR',status:'PAID'},\n {transaction_id:'TXN005',customer_id:'CUST005',amount:999,currency:'USD',status:'PENDING'}\n];\n// Change TEST_CASE from 1 to 5 to test a different record.\n// Only one transaction is sent to Groq per workflow execution.\nconst TEST_CASE = 1;\nif (!Number.isInteger(TEST_CASE) || TEST_CASE < 1 || TEST_CASE > rows.length) {\n  throw new Error('TEST_CASE must be between 1 and ' + rows.length);\n}\nreturn [{json:{transaction:rows[TEST_CASE - 1], test_case:TEST_CASE}}];"
+      },
+      "id": "ec44f8d7-0e08-451c-81ff-9ec78c63afdc",
+      "name": "Mock Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2528,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = $json.transaction;\nconst errors=[];\nif (!/^TXN\\d{3,}$/.test(String(t.transaction_id||''))) errors.push('Invalid transaction_id');\nif (!/^CUST\\d{3,}$/.test(String(t.customer_id||''))) errors.push('Invalid customer_id');\nif (typeof t.amount !== 'number' || !Number.isFinite(t.amount) || t.amount <= 0) errors.push('Amount must be a positive number');\nif (!['INR','USD','EUR'].includes(t.currency)) errors.push('Currency must be INR, USD, or EUR');\nif (!['PAID','PENDING','FAILED'].includes(t.status)) errors.push('Status must be PAID, PENDING, or FAILED');\nreturn {json:{original:t,initial_errors:errors,initial_valid:errors.length===0}};"
+      },
+      "id": "cef1d6d1-139a-4e46-86a3-aa0f8da39884",
+      "name": "Validation Tool Initial",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2304,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Audit this one transaction: {{ JSON.stringify($json.original) }}. Initial validation errors: {{ JSON.stringify($json.initial_errors) }}. You MUST call Transaction_Validation_Tool once with a JSON string containing transaction_id, customer_id, amount, currency, status. You may ONLY convert a positive numeric string amount to a number and uppercase currency/status. Never change a negative amount, invent customer IDs, or alter other values. Return the structured fields transaction_id, customer_id, amount, currency, payment_status, audit_status, corrections, issues, reason. If the tool reports invalid, use REJECTED. Otherwise use ACCEPTED. Output JSON only.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a cautious transaction auditor. You must use Transaction_Validation_Tool to validate proposed records. Follow the correction limits exactly. Output only the required structured object. Do not reveal private reasoning.",
+          "maxIterations": 2
+        }
+      },
+      "id": "adbcc859-539e-4a28-8337-90d021b9561f",
+      "name": "Self Correcting Auditor",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        -2048,
+        112
+      ],
+      "settings": {
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 30000
+      }
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "61b112a5-158e-4326-ad1e-5372fcc4d644",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -2128,
+        368
+      ],
+      "settings": {
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 30000
+      },
+      "credentials": {
+        "groqApi": {
+          "id": "3xMM17Qgxo47Lywj",
+          "name": "Groq account 6"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\"transaction_id\": \"TXN001\", \"customer_id\": \"CUST001\", \"amount\": 1200, \"currency\": \"INR\", \"payment_status\": \"PAID\", \"audit_status\": \"ACCEPTED\", \"corrections\": [\"Uppercased status\"], \"issues\": [], \"reason\": \"Validated transaction\"}"
+      },
+      "id": "2ab0d9e9-7b21-41ae-8b6f-3d5be7b21064",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        -1920,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "name": "Transaction_Validation_Tool",
+        "description": "Validate a transaction JSON object with transaction_id, customer_id, amount, currency, status. Input must be a JSON string. Returns valid and errors.",
+        "jsCode": "// n8n Code Tool receives the AI Agent input as `query`.\nlet t;\ntry {\n  const input = typeof query === 'undefined' ? {} : query;\n  t = typeof input === 'string' ? JSON.parse(input) : input;\n  if (t && typeof t === 'object' && t.transaction) t = t.transaction;\n  if (!t || typeof t !== 'object' || Array.isArray(t)) throw new Error('Expected transaction object');\n} catch (error) {\n  return JSON.stringify({valid:false,errors:['Invalid JSON input: ' + error.message]});\n}\nconst errors = [];\nif (!/^TXN\\d{3,}$/.test(String(t.transaction_id ?? ''))) errors.push('Invalid transaction_id');\nif (!/^CUST\\d{3,}$/.test(String(t.customer_id ?? ''))) errors.push('Invalid customer_id');\nif (typeof t.amount !== 'number' || !Number.isFinite(t.amount) || t.amount <= 0) errors.push('Amount must be a positive number');\nif (!['INR','USD','EUR'].includes(t.currency)) errors.push('Invalid currency');\nif (!['PAID','PENDING','FAILED'].includes(t.status)) errors.push('Invalid status');\nreturn JSON.stringify({valid:errors.length===0,errors});"
+      },
+      "id": "a2c37f79-47c5-4fec-a0a2-df0bccf01218",
+      "name": "Transaction_Validation_Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [
+        -1712,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Deterministic final audit: never trust the model's status without checking.\nconst source = $('Validation Tool Initial').item.json;\nconst orig = source.original;\nlet r = $json.output ?? $json;\nconst errors = [];\ntry {\n  if (typeof r === 'string') r = JSON.parse(r);\n  if (r && typeof r.output === 'string') r = JSON.parse(r.output);\n  else if (r && typeof r.output === 'object') r = r.output;\n  if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('Agent did not return an object');\n} catch (e) {\n  errors.push('Could not parse agent response: ' + e.message);\n  r = {};\n}\nif (r.transaction_id !== orig.transaction_id) errors.push('Transaction ID changed');\nif (r.customer_id !== orig.customer_id) errors.push('Customer ID changed');\nif (!/^TXN\\d{3,}$/.test(String(r.transaction_id ?? ''))) errors.push('Invalid transaction_id');\nif (!/^CUST\\d{3,}$/.test(String(r.customer_id ?? ''))) errors.push('Invalid customer_id');\nif (typeof r.amount !== 'number' || !Number.isFinite(r.amount) || r.amount <= 0) errors.push('Invalid amount');\nif (!['INR','USD','EUR'].includes(r.currency)) errors.push('Invalid currency');\nif (!['PAID','PENDING','FAILED'].includes(r.payment_status)) errors.push('Invalid payment_status');\nconst amountSafe = r.amount === orig.amount ||\n  (typeof orig.amount === 'string' && orig.amount.trim() !== '' && Number(orig.amount) === r.amount && r.amount > 0);\nif (!amountSafe) errors.push('Unsafe amount change');\nif (r.currency !== String(orig.currency ?? '').toUpperCase()) errors.push('Unsafe currency change');\nif (r.payment_status !== String(orig.status ?? '').toUpperCase()) errors.push('Unsafe status change');\nconst validated = errors.length === 0;\nreturn {json:{\n  transaction_id: orig.transaction_id,\n  customer_id: orig.customer_id,\n  amount: validated ? r.amount : orig.amount,\n  currency: validated ? r.currency : orig.currency,\n  payment_status: validated ? r.payment_status : orig.status,\n  audit_status: validated ? 'ACCEPTED' : 'REJECTED',\n  validated,\n  corrections: Array.isArray(r.corrections) ? r.corrections : [],\n  issues: [...(Array.isArray(r.issues) ? r.issues : []), ...errors],\n  reason: validated ? (r.reason || 'Passed deterministic validation') : errors.join('; '),\n  initial_errors: source.initial_errors,\n  validation_errors: errors,\n  original_transaction: orig\n}};"
+      },
+      "id": "18af1014-8571-4988-943b-0e376bba6e8f",
+      "name": "Verify Corrections",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.validated }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "744aa71a-0262-4915-8bb4-0e28d0c906d7",
+      "name": "Accepted Decision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1568,
+        112
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f9d7c419-013c-42f6-9518-d0fb6a94baa6",
+      "name": "Accepted Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        16
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "2acb9037-0414-4346-87fa-0770f64be6b2",
+      "name": "Rejected Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        240
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Mock Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Transactions": {
+      "main": [
+        [
+          {
+            "node": "Validation Tool Initial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Tool Initial": {
+      "main": [
+        [
+          {
+            "node": "Self Correcting Auditor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Self Correcting Auditor": {
+      "main": [
+        [
+          {
+            "node": "Verify Corrections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Corrections": {
+      "main": [
+        [
+          {
+            "node": "Accepted Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Self Correcting Auditor",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Self Correcting Auditor",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transaction_Validation_Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Self Correcting Auditor",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accepted Decision": {
+      "main": [
+        [
+          {
+            "node": "Accepted Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "bf5abf04-6920-4598-84d7-c3a992e25793",
+  "meta": {
+    "instanceId": "a03c7678428ef19ededbf912f16f7d5798ec7b9ab4c17f2a2def6a9e791e7215"
+  },
+  "nodeGroups": [],
+  "id": "dtiDJlTwIRhHW4JK",
+  "tags": []
+}
